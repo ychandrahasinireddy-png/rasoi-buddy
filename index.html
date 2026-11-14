@@ -133,4 +133,408 @@ function md(src){
   const close = () => { if(list){ out += `</${list}>`; list = null; } };
   for (let raw of lines){
     const l = raw.trim();
-    if (!l){ close();
+    if (!l){ close(); continue; }
+    let m;
+    if ((m = l.match(/^#{1,4}\s+(.*)/)) || (m = l.match(/^\*\*([^*]+)\*\*:?$/))){ close(); out += `<h4>${inline(m[1])}</h4>`; }
+    else if ((m = l.match(/^[-*•]\s+(.*)/))){ if(list!=='ul'){close(); out+='<ul>'; list='ul';} out += `<li>${inline(m[1])}</li>`; }
+    else if ((m = l.match(/^\d+[.)]\s+(.*)/))){ if(list!=='ol'){close(); out+='<ol>'; list='ol';} out += `<li>${inline(m[1])}</li>`; }
+    else { close(); out += `<p>${inline(l)}</p>`; }
+  }
+  close();
+  return out;
+}
+
+function addMsg(role, text, {html=false} = {}){
+  const d = document.createElement('div');
+  d.className = 'msg ' + role;
+  d.innerHTML = html ? text : md(text);
+  chat.appendChild(d); scroll();
+  if (role === 'user') history.push({role:'user', content:text});
+  else if (!html) history.push({role:'assistant', content:text});
+  return d;
+}
+
+function typing(){
+  const d = document.createElement('div');
+  d.className = 'msg bot typing'; d.innerHTML = '<i></i><i></i><i></i>';
+  chat.appendChild(d); scroll();
+  return () => d.remove();
+}
+
+async function botSay(text){
+  const stop = typing(); await wait(450); stop();
+  return addMsg('bot', text);
+}
+
+function chips(options, onPick, back, skip){
+  const wrap = document.createElement('div');
+  wrap.className = 'chips';
+  if (back) addBack(wrap, back);
+  options.forEach(opt => {
+    const b = document.createElement('button');
+    b.className = 'chip'; b.textContent = opt; b.type = 'button';
+    b.onclick = () => {
+      if (busy) return;
+      wrap.querySelectorAll('.chip').forEach(c => c.disabled = true);
+      b.classList.add('picked');
+      addMsg('user', opt);
+      onPick(opt);
+    };
+    wrap.appendChild(b);
+  });
+  if (skip) addSkip(wrap, skip);
+  chat.appendChild(wrap); scroll();
+  return wrap;
+}
+
+// "Skip, just show me dishes" for people with no patience for questions
+function addSkip(wrap, skip){
+  const b = document.createElement('button');
+  b.className = 'chip skip'; b.type = 'button'; b.textContent = '⏭️ Skip, just show me dishes';
+  b.onclick = () => {
+    if (busy) return;
+    wrap.querySelectorAll('.chip, .other-box input, .other-box button').forEach(c => c.disabled = true);
+    pendingMulti = null;
+    skip();
+  };
+  wrap.appendChild(b);
+}
+
+function addBack(wrap, back){
+  const b = document.createElement('button');
+  b.className = 'chip back'; b.type = 'button'; b.textContent = '← Back';
+  b.onclick = () => {
+    if (busy) return;
+    wrap.querySelectorAll('.chip').forEach(c => c.disabled = true);
+    pendingMulti = null;
+    back();
+  };
+  wrap.appendChild(b);
+}
+
+// multi-select chips for the kitchen step
+let pendingMulti = null;
+function multiChips(options, preselected, onDone, back, cfg, skip){
+  const wrap = document.createElement('div');
+  wrap.className = 'chips';
+  const state = {selected: new Set(), extras: [], wrap};
+  pendingMulti = state;
+  options.forEach(opt => {
+    const b = document.createElement('button');
+    b.className = 'chip'; b.type = 'button'; b.textContent = opt;
+    if (preselected.includes(opt)){ b.classList.add('picked'); state.selected.add(opt); }
+    b.onclick = () => {
+      b.classList.toggle('picked');
+      b.classList.contains('picked') ? state.selected.add(opt) : state.selected.delete(opt);
+    };
+    wrap.appendChild(b);
+  });
+  const sep = document.createElement('div'); sep.className = 'sep';
+  // an ingredient typed via "Other" becomes its own chip, already ticked
+  const addCustom = name => {
+    if (!name || [...state.selected].some(x => x.toLowerCase() === name.toLowerCase())) return;
+    const b = document.createElement('button');
+    b.className = 'chip picked'; b.type = 'button'; b.textContent = name;
+    state.selected.add(name);
+    b.onclick = () => {
+      b.classList.toggle('picked');
+      b.classList.contains('picked') ? state.selected.add(name) : state.selected.delete(name);
+    };
+    wrap.insertBefore(b, otherChip);
+  };
+  state.addCustom = addCustom;
+  const otherChip = document.createElement('button');
+  otherChip.className = 'chip'; otherChip.type = 'button'; otherChip.textContent = '➕ Other';
+  let box = null;
+  otherChip.onclick = () => {
+    if (box){ box.querySelector('input').focus(); return; }
+    box = document.createElement('div'); box.className = 'other-box';
+    box.innerHTML = `<input placeholder="${esc(cfg.placeholder)}"><button type="button">Add</button>`;
+    const inp = box.querySelector('input');
+    const add = () => {
+      inp.value.split(/,|\band\b|\n/i).map(x => x.trim()).filter(Boolean)
+        .forEach(x => addCustom(x.charAt(0).toUpperCase() + x.slice(1)));
+      inp.value = ''; inp.focus();
+    };
+    box.querySelector('button').onclick = add;
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter'){ e.preventDefault(); add(); } });
+    wrap.insertBefore(box, sep);
+    inp.focus(); scroll();
+  };
+  wrap.appendChild(otherChip);
+  preselected.filter(x => !options.includes(x)).forEach(addCustom);
+  wrap.appendChild(sep);
+  const finish = (skip) => {
+    if (busy) return;
+    wrap.querySelectorAll('.chip, .other-box input, .other-box button').forEach(c => c.disabled = true);
+    pendingMulti = null;
+    const items = skip ? [] : [...state.selected];
+    addMsg('user', items.length ? cfg.prefix + items.join(', ') : cfg.noneMsg);
+    onDone(items.length ? items.join(', ') : cfg.noneValue);
+  };
+  const done = document.createElement('button');
+  done.className = 'chip done'; done.type = 'button'; done.textContent = '✅ Done';
+  done.onclick = () => finish(false);
+  const none = document.createElement('button');
+  none.className = 'chip'; none.type = 'button'; none.textContent = cfg.noneLabel;
+  none.onclick = () => finish(true);
+  wrap.appendChild(done); wrap.appendChild(none);
+  if (back) addBack(wrap, back);
+  if (skip) addSkip(wrap, skip);
+  chat.appendChild(wrap); scroll();
+}
+
+function kitchenOptions(){
+  const base = ['Onion','Tomato','Potato','Green chilli','Ginger-garlic','Capsicum','Carrot','Cabbage','Beans','Spinach / greens','Coconut','Lemon','Curd','Milk','Paneer','Rice','Dal','Atta','Bread','Noodles / pasta'];
+  const d = (prefs.diet || '').toLowerCase();
+  if (d.includes('egg') || d.includes('non')) base.push('Eggs');
+  if (d.includes('non')) base.push('Chicken','Fish','Mutton','Prawns');
+  return base;
+}
+
+function setBusy(v){ busy = v; sendBtn.disabled = v; }
+
+/* ---------- AI ----------
+   The page never talks to the AI directly. It sends what the person picked to
+   our own small server file (/api/chat), which holds the secret API key and the
+   prompts, asks Gemini, and sends the answer back.                              */
+async function api(type, extra = {}){
+  let r;
+  try {
+    r = await fetch('/api/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({type, prefs, shown, history: history.slice(-14), ...extra})
+    });
+  } catch(e){ throw {code:'offline'}; }
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 429) throw {code:'rate_limited'};
+  if (!r.ok) throw {code: r.status >= 500 || r.status === 404 ? 'offline' : 'error', message: data.error};
+  return data;
+}
+
+function handleAIError(e){
+  if (e && e.code === 'offline'){ aiOff = true; setStatus(); }
+  const msg = e && e.code === 'rate_limited'
+    ? "Lots of hungry people right now 😅 give me a minute and try again."
+    : aiOff ? "My AI brain is taking a break, so I'll stick to the quick picks for now."
+            : "Oops, something went wrong on my side. Try that again?";
+  addMsg('bot', msg);
+}
+
+/* ---------- flow ---------- */
+const STEPS = [
+  {key:'mood',    label:'Mood',    q:() => "So… what's the mood like today?", opts:() => MOODS},
+  {key:'cuisine', label:'Cuisine', q:() => `${prefs.mood || 'Nice'}, love it. Which cuisine are you feeling?`, opts:() => CUISINES,
+     map: c => { if (/surprise/i.test(c)){ const k = Object.keys(FALLBACK); return k[Math.floor(Math.random()*k.length)]; } return c; }},
+  {key:'diet',    label:'Diet',    q:() => `${prefs.cuisine || 'Okay'} it is! Veg or non-veg?`, opts:() => DIETS},
+  {key:'allergies', label:'Allergies', multi:true,
+     q:() => "Anything you're **allergic to** or don't eat? 🚫 Tap them, or tap **➕ Other** to type your own. I'll keep them out of everything I suggest.",
+     opts:() => ALLERGIES,
+     cfg:{prefix:'Please avoid: ', noneLabel:'🙅 No allergies', noneValue:'none', noneMsg:'No allergies 👍', placeholder:'e.g. mustard, brinjal, coconut'}},
+  {key:'kitchen', label:'Kitchen', multi:true,
+     cfg:{prefix:'I have: ', noneLabel:"🛒 Skip, I'll shop", noneValue:'nothing specific, happy to shop', noneMsg:"Not much honestly, I'm happy to buy what's needed", placeholder:'e.g. leftover rice, cheese, mushrooms'},
+     q:() => "What do you have in your kitchen right now? 🧺 Tap everything you've got. Something not on the list? Tap **➕ Other** and type it in. Then hit **Done**.",
+     opts:() => kitchenOptions()},
+  {key:'time',    label:'Time',    q:() => "How much time do you have?", opts:() => TIMES},
+  {key:'skill',   label:'Skill',   q:() => "Last one, be honest 😄 how comfortable are you in the kitchen?", opts:() => SKILLS},
+];
+
+async function greet(first){
+  await botSay(first
+    ? "Hey there! 👋 I'm **Rasoi Buddy**. I help people who can't cook, or just can't decide what to cook."
+    : "Hi hi! 👋 What's up?");
+  ask(0);
+}
+
+// edit = true means we came from "Edit my choices", so go straight back to dishes afterwards
+async function ask(i, edit=false){
+  const step = STEPS[i];
+  await botSay(step.q());
+  const next = val => {
+    prefs[step.key] = val;
+    if (edit || i + 1 >= STEPS.length) suggest();
+    else ask(i + 1);
+  };
+  const back = edit ? () => editMenu()
+             : i > 0 ? () => { addMsg('user', '← Go back'); delete prefs[STEPS[i-1].key]; ask(i - 1); }
+             : null;
+  const skip = (!edit && i > 0) ? () => { addMsg('user', '⏭️ Skip, just show me dishes'); suggest(); } : null;
+  if (step.multi){
+    const cur = prefs[step.key];
+    const pre = edit && cur && cur !== step.cfg.noneValue ? cur.split(', ') : [];
+    multiChips(step.opts(), pre, next, back, step.cfg, skip);
+  } else {
+    chips(step.opts(), v => next(step.map ? step.map(clean(v)) : clean(v)), back, skip);
+  }
+}
+
+async function editMenu(){
+  await botSay("Sure! What do you want to change?");
+  const short = v => v && v.length > 22 ? v.slice(0, 20) + '…' : (v || '—');
+  const opts = STEPS.map(st => `${st.label}: ${short(prefs[st.key])}`);
+  chips([...opts, '👍 Never mind'], v => {
+    const i = STEPS.findIndex(st => v.startsWith(st.label + ':'));
+    if (i >= 0) ask(i, true); else afterDishes();
+  });
+}
+
+const ytLink = name => 'https://www.youtube.com/results?search_query=' + encodeURIComponent(name + ' recipe');
+
+// Real photo from Wikipedia, only when the dish has its own article. No match = no photo.
+const photoCache = {};
+async function loadPhoto(card, title){
+  if (!title) return;
+  try {
+    if (!(title in photoCache)){
+      const r = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(title.replace(/ /g, '_')));
+      const d = r.ok ? await r.json() : null;
+      photoCache[title] = d && d.type === 'standard' && d.thumbnail
+        ? {src: d.thumbnail.source, page: d.content_urls && d.content_urls.desktop.page} : null;
+    }
+    const p = photoCache[title];
+    if (!p) return;
+    const pic = card.querySelector('.pic');
+    pic.innerHTML = `<img src="${esc(p.src)}" alt="${esc(title)}" loading="lazy"><a class="credit" href="${esc(p.page || '#')}" target="_blank" rel="noopener">Photo: Wikipedia</a>`;
+    pic.querySelector('img').onerror = () => { pic.hidden = true; };
+    pic.hidden = false;
+  } catch(e){ /* no photo, no problem */ }
+}
+
+function fallbackDishes(){
+  const set = FALLBACK[prefs.cuisine] || FALLBACK['North Indian'];
+  const pool = (/non/i.test(prefs.diet) ? set.non : set.veg).filter(d => !shown.includes(d));
+  return (pool.length ? pool : set.veg).slice(0,6).map(n => ({name:n, why:'A solid pick for today.', time:'', level:''}));
+}
+
+async function suggest(more){
+  setBusy(true);
+  const stop = typing();
+  let reply, dishes;
+  if (!aiOff){
+    try {
+      const res = await api('suggest', {more: !!more});
+      reply = res.data.reply; dishes = res.data.dishes || [];
+    } catch(e){
+      if (e.code === 'rate_limited'){ stop(); setBusy(false); handleAIError(e); return afterDishes(); }
+      if (e.code === 'offline'){ aiOff = true; setStatus(); }
+    }
+  }
+  if (!dishes || !dishes.length){ dishes = fallbackDishes(); reply = "Here's what I'd make:"; }
+  stop(); setBusy(false);
+  addMsg('bot', reply);
+  showDishes(dishes);
+  if (aiOff && prefs.allergies && prefs.allergies !== 'none'){
+    addMsg('bot', "⚠️ Heads up: in quick-pick mode I can't check these for your allergies, so please read the ingredients carefully.");
+  } else if (!prefs.allergies){
+    addMsg('bot', "Got any food allergies? Just type them (like 'no peanuts') and I'll redo the list. 🙂");
+  }
+  afterDishes();
+}
+
+function showDishes(dishes){
+  if (!dishes || !dishes.length) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'cards';
+  dishes.forEach(d => {
+    shown.push(d.name);
+    const c = document.createElement('div');
+    c.className = 'card';
+    c.innerHTML = `<div class="pic" hidden></div>
+      <h3>${esc(d.name)}</h3>
+      ${d.why ? `<div class="why">${esc(d.why)}</div>` : ''}
+      <div class="meta">${d.time ? `<span>⏱ ${esc(d.time)}</span>` : ''}${d.level ? `<span>${esc(d.level)}</span>` : ''}</div>
+      <div class="actions">
+        <button type="button">Recipe please 👩‍🍳</button>
+        <a class="yt" href="${ytLink(d.name)}" target="_blank" rel="noopener">▶ YouTube</a>
+      </div>`;
+    c.querySelector('button').onclick = () => { if (!busy){ addMsg('user', `Recipe for ${d.name} please!`); recipe(d.name); } };
+    wrap.appendChild(c);
+    loadPhoto(c, d.wiki || d.name);
+  });
+  chat.appendChild(wrap); scroll();
+  history.push({role:'assistant', content:`(suggested: ${dishes.map(d=>d.name).join(', ')})`});
+}
+
+function afterDishes(){
+  chips(['🔄 Show me more','✏️ Edit my choices','🏁 Start over'], v => {
+    if (/more/i.test(v)) suggest(true);
+    else if (/edit/i.test(v)) editMenu();
+    else restart();
+  });
+}
+
+async function recipe(name){
+  if (aiOff){
+    addMsg('bot', `I'd love to walk you through **${name}**, but my AI side is taking a break 🙈 Here are some videos instead:`);
+    return addMsg('bot', `<a class="yt" href="${ytLink(name)}" target="_blank" rel="noopener">▶ Watch ${esc(name)} recipes on YouTube</a>`, {html:true});
+  }
+  setBusy(true);
+  const stop = typing();
+  try {
+    const res = await api('recipe', {dish: name});
+    stop();
+    addMsg('bot', res.text);
+    history[history.length-1] = {role:'assistant', content:`(gave recipe for ${name})`};
+    addMsg('bot', `Prefer to watch? <a class="yt" href="${ytLink(name)}" target="_blank" rel="noopener">▶ ${esc(name)} on YouTube</a>`, {html:true});
+  } catch(e){ stop(); handleAIError(e); }
+  setBusy(false);
+  chips(['😋 Another dish idea','✏️ Edit my choices','🏁 Start over'], v =>
+    /another/i.test(v) ? suggest(true) : /edit/i.test(v) ? editMenu() : restart());
+}
+
+async function freeText(text){
+  addMsg('user', text);
+  if (pendingMulti){
+    const items = text.split(/,|\band\b|\n/i).map(x => x.trim()).filter(Boolean);
+    items.forEach(x => pendingMulti.addCustom(x.charAt(0).toUpperCase() + x.slice(1)));
+    history.pop();
+    return botSay(`Added **${items.join(', ')}** ✓ Anything else? Then hit **Done**.`);
+  }
+  const isGreeting = /^(hi+|hey+|hello+|hii+|yo|sup|wassup|namaste|hola)\b/i.test(text.trim()) && text.trim().split(/\s+/).length <= 3;
+  if (isGreeting && !prefs.mood) return greet(false);
+  if (aiOff){
+    return botSay("I'm on quick-pick mode right now, so tap one of the options and I'll take it from there 🙂");
+  }
+  setBusy(true);
+  const stop = typing();
+  try {
+    const res = (await api('chat')).data;
+    stop(); setBusy(false);
+    if (res.prefs) Object.assign(prefs, res.prefs);
+    if (res.reply) addMsg('bot', res.reply);
+    if (res.recipe_for) return recipe(res.recipe_for);
+    if (res.dishes && res.dishes.length){ showDishes(res.dishes); return afterDishes(); }
+    if (res.chips && res.chips.length) chips(res.chips.slice(0,4), v => freeTextFromChip(v));
+  } catch(e){ stop(); setBusy(false); handleAIError(e); }
+}
+
+// chips from the AI already echo the user's pick, so skip the echo here
+async function freeTextFromChip(v){ history.pop(); freeText(v); }
+
+function restart(){
+  for (const k in prefs) delete prefs[k];
+  shown = []; pendingMulti = null;
+  greet(false);
+}
+
+function setStatus(){
+  const on = !aiOff;
+  document.getElementById('dot').classList.toggle('on', !!on);
+  document.getElementById('statusText').textContent = on ? 'AI on' : 'Quick-pick mode';
+}
+
+form.addEventListener('submit', e => {
+  e.preventDefault();
+  const t = input.value.trim();
+  if (!t || busy) return;
+  input.value = '';
+  freeText(t);
+});
+
+/* ---------- start ---------- */
+greet(true);
+setStatus();
+</script>
+</body>
+</html>

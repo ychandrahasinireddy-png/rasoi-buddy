@@ -51,6 +51,14 @@
   .meta span{background:var(--accent-soft);color:var(--accent-ink);padding:3px 9px;border-radius:999px}
   .card button{align-self:flex-start;margin-top:4px;background:var(--accent);color:#fff;border:0;border-radius:10px;padding:8px 14px;font:inherit;font-size:14px;font-weight:600;cursor:pointer}
   .card button:hover{filter:brightness(.95)}
+  .card .actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:4px}
+  .card .actions button{margin-top:0}
+  .yt{display:inline-flex;align-items:center;gap:6px;border:1px solid #e4d5c3;border-radius:10px;padding:7px 12px;color:var(--ink);text-decoration:none;font-size:14px;font-weight:600;background:#fff}
+  .yt:hover{background:var(--accent-soft)}
+  .pic{position:relative;margin:-14px -16px 4px;border-radius:14px 14px 0 0;overflow:hidden;background:var(--accent-soft)}
+  .pic img{display:block;width:100%;height:150px;object-fit:cover}
+  .pic .credit{position:absolute;right:6px;bottom:6px;font-size:10.5px;background:rgba(0,0,0,.55);color:#fff;padding:2px 6px;border-radius:6px;text-decoration:none}
+  .chip.skip{border-style:dashed;border-color:#cdbfb1;color:var(--muted)}
   .typing{display:flex;gap:4px;padding:14px}
   .typing i{width:7px;height:7px;border-radius:50%;background:#c9b9a8;animation:b 1s infinite}
   .typing i:nth-child(2){animation-delay:.15s}.typing i:nth-child(3){animation-delay:.3s}
@@ -96,6 +104,7 @@ const CUISINES = ['North Indian','South Indian','Andhra style','Kerala style','I
 const DIETS = ['🥦 Veg','🥚 Egg is fine','🍗 Non-veg'];
 const TIMES = ['⚡ 15 mins','⏱️ ~30 mins','🕰️ I have an hour+'];
 const SKILLS = ['😅 I can barely boil water','🙂 I can manage basics','😎 I\'m pretty decent'];
+const ALLERGIES = ['Peanuts','Tree nuts (cashew, almond)','Dairy / milk','Gluten / wheat','Eggs','Soy','Sesame','Fish','Shellfish / prawns','Mushrooms','Onion & garlic'];
 
 const FALLBACK = {
   'North Indian':{veg:['Rajma chawal','Paneer bhurji','Aloo paratha','Chole','Dal tadka','Aloo gobi'],non:['Butter chicken','Simple chicken curry','Keema matar','Egg bhurji','Chicken tikka','Anda curry']},
@@ -155,7 +164,7 @@ async function botSay(text){
   return addMsg('bot', text);
 }
 
-function chips(options, onPick, back){
+function chips(options, onPick, back, skip){
   const wrap = document.createElement('div');
   wrap.className = 'chips';
   if (back) addBack(wrap, back);
@@ -171,8 +180,22 @@ function chips(options, onPick, back){
     };
     wrap.appendChild(b);
   });
+  if (skip) addSkip(wrap, skip);
   chat.appendChild(wrap); scroll();
   return wrap;
+}
+
+// "Skip, just show me dishes" for people with no patience for questions
+function addSkip(wrap, skip){
+  const b = document.createElement('button');
+  b.className = 'chip skip'; b.type = 'button'; b.textContent = '⏭️ Skip, just show me dishes';
+  b.onclick = () => {
+    if (busy) return;
+    wrap.querySelectorAll('.chip, .other-box input, .other-box button').forEach(c => c.disabled = true);
+    pendingMulti = null;
+    skip();
+  };
+  wrap.appendChild(b);
 }
 
 function addBack(wrap, back){
@@ -181,19 +204,19 @@ function addBack(wrap, back){
   b.onclick = () => {
     if (busy) return;
     wrap.querySelectorAll('.chip').forEach(c => c.disabled = true);
-    pendingKitchen = null;
+    pendingMulti = null;
     back();
   };
   wrap.appendChild(b);
 }
 
 // multi-select chips for the kitchen step
-let pendingKitchen = null;
-function multiChips(options, preselected, onDone, back){
+let pendingMulti = null;
+function multiChips(options, preselected, onDone, back, cfg, skip){
   const wrap = document.createElement('div');
   wrap.className = 'chips';
   const state = {selected: new Set(), extras: [], wrap};
-  pendingKitchen = state;
+  pendingMulti = state;
   options.forEach(opt => {
     const b = document.createElement('button');
     b.className = 'chip'; b.type = 'button'; b.textContent = opt;
@@ -224,7 +247,7 @@ function multiChips(options, preselected, onDone, back){
   otherChip.onclick = () => {
     if (box){ box.querySelector('input').focus(); return; }
     box = document.createElement('div'); box.className = 'other-box';
-    box.innerHTML = '<input placeholder="e.g. leftover rice, cheese, mushrooms"><button type="button">Add</button>';
+    box.innerHTML = `<input placeholder="${esc(cfg.placeholder)}"><button type="button">Add</button>`;
     const inp = box.querySelector('input');
     const add = () => {
       inp.value.split(/,|\band\b|\n/i).map(x => x.trim()).filter(Boolean)
@@ -242,19 +265,20 @@ function multiChips(options, preselected, onDone, back){
   const finish = (skip) => {
     if (busy) return;
     wrap.querySelectorAll('.chip, .other-box input, .other-box button').forEach(c => c.disabled = true);
-    pendingKitchen = null;
+    pendingMulti = null;
     const items = skip ? [] : [...state.selected];
-    addMsg('user', items.length ? `I have: ${items.join(', ')}` : "Not much honestly, I'm happy to buy what's needed");
-    onDone(items.length ? items.join(', ') : 'nothing specific, happy to shop');
+    addMsg('user', items.length ? cfg.prefix + items.join(', ') : cfg.noneMsg);
+    onDone(items.length ? items.join(', ') : cfg.noneValue);
   };
   const done = document.createElement('button');
   done.className = 'chip done'; done.type = 'button'; done.textContent = '✅ Done';
   done.onclick = () => finish(false);
-  const skip = document.createElement('button');
-  skip.className = 'chip'; skip.type = 'button'; skip.textContent = "🛒 Skip, I'll shop";
-  skip.onclick = () => finish(true);
-  wrap.appendChild(done); wrap.appendChild(skip);
+  const none = document.createElement('button');
+  none.className = 'chip'; none.type = 'button'; none.textContent = cfg.noneLabel;
+  none.onclick = () => finish(true);
+  wrap.appendChild(done); wrap.appendChild(none);
   if (back) addBack(wrap, back);
+  if (skip) addSkip(wrap, skip);
   chat.appendChild(wrap); scroll();
 }
 
@@ -302,7 +326,12 @@ const STEPS = [
   {key:'cuisine', label:'Cuisine', q:() => `${prefs.mood || 'Nice'}, love it. Which cuisine are you feeling?`, opts:() => CUISINES,
      map: c => { if (/surprise/i.test(c)){ const k = Object.keys(FALLBACK); return k[Math.floor(Math.random()*k.length)]; } return c; }},
   {key:'diet',    label:'Diet',    q:() => `${prefs.cuisine || 'Okay'} it is! Veg or non-veg?`, opts:() => DIETS},
+  {key:'allergies', label:'Allergies', multi:true,
+     q:() => "Anything you're **allergic to** or don't eat? 🚫 Tap them, or tap **➕ Other** to type your own. I'll keep them out of everything I suggest.",
+     opts:() => ALLERGIES,
+     cfg:{prefix:'Please avoid: ', noneLabel:'🙅 No allergies', noneValue:'none', noneMsg:'No allergies 👍', placeholder:'e.g. mustard, brinjal, coconut'}},
   {key:'kitchen', label:'Kitchen', multi:true,
+     cfg:{prefix:'I have: ', noneLabel:"🛒 Skip, I'll shop", noneValue:'nothing specific, happy to shop', noneMsg:"Not much honestly, I'm happy to buy what's needed", placeholder:'e.g. leftover rice, cheese, mushrooms'},
      q:() => "What do you have in your kitchen right now? 🧺 Tap everything you've got. Something not on the list? Tap **➕ Other** and type it in. Then hit **Done**.",
      opts:() => kitchenOptions()},
   {key:'time',    label:'Time',    q:() => "How much time do you have?", opts:() => TIMES},
@@ -328,11 +357,13 @@ async function ask(i, edit=false){
   const back = edit ? () => editMenu()
              : i > 0 ? () => { addMsg('user', '← Go back'); delete prefs[STEPS[i-1].key]; ask(i - 1); }
              : null;
+  const skip = (!edit && i > 0) ? () => { addMsg('user', '⏭️ Skip, just show me dishes'); suggest(); } : null;
   if (step.multi){
-    const pre = edit && prefs.kitchen ? prefs.kitchen.split(', ').filter(x => !/nothing specific/.test(x)) : [];
-    multiChips(step.opts(), pre, next, back);
+    const cur = prefs[step.key];
+    const pre = edit && cur && cur !== step.cfg.noneValue ? cur.split(', ') : [];
+    multiChips(step.opts(), pre, next, back, step.cfg, skip);
   } else {
-    chips(step.opts(), v => next(step.map ? step.map(clean(v)) : clean(v)), back);
+    chips(step.opts(), v => next(step.map ? step.map(clean(v)) : clean(v)), back, skip);
   }
 }
 
@@ -344,6 +375,28 @@ async function editMenu(){
     const i = STEPS.findIndex(st => v.startsWith(st.label + ':'));
     if (i >= 0) ask(i, true); else afterDishes();
   });
+}
+
+const ytLink = name => 'https://www.youtube.com/results?search_query=' + encodeURIComponent(name + ' recipe');
+
+// Real photo from Wikipedia, only when the dish has its own article. No match = no photo.
+const photoCache = {};
+async function loadPhoto(card, title){
+  if (!title) return;
+  try {
+    if (!(title in photoCache)){
+      const r = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(title.replace(/ /g, '_')));
+      const d = r.ok ? await r.json() : null;
+      photoCache[title] = d && d.type === 'standard' && d.thumbnail
+        ? {src: d.thumbnail.source, page: d.content_urls && d.content_urls.desktop.page} : null;
+    }
+    const p = photoCache[title];
+    if (!p) return;
+    const pic = card.querySelector('.pic');
+    pic.innerHTML = `<img src="${esc(p.src)}" alt="${esc(title)}" loading="lazy"><a class="credit" href="${esc(p.page || '#')}" target="_blank" rel="noopener">Photo: Wikipedia</a>`;
+    pic.querySelector('img').onerror = () => { pic.hidden = true; };
+    pic.hidden = false;
+  } catch(e){ /* no photo, no problem */ }
 }
 
 function fallbackDishes(){
@@ -369,6 +422,11 @@ async function suggest(more){
   stop(); setBusy(false);
   addMsg('bot', reply);
   showDishes(dishes);
+  if (aiOff && prefs.allergies && prefs.allergies !== 'none'){
+    addMsg('bot', "⚠️ Heads up: in quick-pick mode I can't check these for your allergies, so please read the ingredients carefully.");
+  } else if (!prefs.allergies){
+    addMsg('bot', "Got any food allergies? Just type them (like 'no peanuts') and I'll redo the list. 🙂");
+  }
   afterDishes();
 }
 
@@ -380,12 +438,17 @@ function showDishes(dishes){
     shown.push(d.name);
     const c = document.createElement('div');
     c.className = 'card';
-    c.innerHTML = `<h3>${esc(d.name)}</h3>
+    c.innerHTML = `<div class="pic" hidden></div>
+      <h3>${esc(d.name)}</h3>
       ${d.why ? `<div class="why">${esc(d.why)}</div>` : ''}
       <div class="meta">${d.time ? `<span>⏱ ${esc(d.time)}</span>` : ''}${d.level ? `<span>${esc(d.level)}</span>` : ''}</div>
-      <button type="button">Recipe please 👩‍🍳</button>`;
+      <div class="actions">
+        <button type="button">Recipe please 👩‍🍳</button>
+        <a class="yt" href="${ytLink(d.name)}" target="_blank" rel="noopener">▶ YouTube</a>
+      </div>`;
     c.querySelector('button').onclick = () => { if (!busy){ addMsg('user', `Recipe for ${d.name} please!`); recipe(d.name); } };
     wrap.appendChild(c);
+    loadPhoto(c, d.wiki || d.name);
   });
   chat.appendChild(wrap); scroll();
   history.push({role:'assistant', content:`(suggested: ${dishes.map(d=>d.name).join(', ')})`});
@@ -401,7 +464,8 @@ function afterDishes(){
 
 async function recipe(name){
   if (aiOff){
-    return addMsg('bot', `I'd love to walk you through **${name}**, but my AI side is taking a break. For now, try searching "${name} easy recipe" on YouTube 🙈`);
+    addMsg('bot', `I'd love to walk you through **${name}**, but my AI side is taking a break 🙈 Here are some videos instead:`);
+    return addMsg('bot', `<a class="yt" href="${ytLink(name)}" target="_blank" rel="noopener">▶ Watch ${esc(name)} recipes on YouTube</a>`, {html:true});
   }
   setBusy(true);
   const stop = typing();
@@ -410,6 +474,7 @@ async function recipe(name){
     stop();
     addMsg('bot', res.text);
     history[history.length-1] = {role:'assistant', content:`(gave recipe for ${name})`};
+    addMsg('bot', `Prefer to watch? <a class="yt" href="${ytLink(name)}" target="_blank" rel="noopener">▶ ${esc(name)} on YouTube</a>`, {html:true});
   } catch(e){ stop(); handleAIError(e); }
   setBusy(false);
   chips(['😋 Another dish idea','✏️ Edit my choices','🏁 Start over'], v =>
@@ -418,9 +483,9 @@ async function recipe(name){
 
 async function freeText(text){
   addMsg('user', text);
-  if (pendingKitchen){
+  if (pendingMulti){
     const items = text.split(/,|\band\b|\n/i).map(x => x.trim()).filter(Boolean);
-    items.forEach(x => pendingKitchen.addCustom(x.charAt(0).toUpperCase() + x.slice(1)));
+    items.forEach(x => pendingMulti.addCustom(x.charAt(0).toUpperCase() + x.slice(1)));
     history.pop();
     return botSay(`Added **${items.join(', ')}** ✓ Anything else? Then hit **Done**.`);
   }
@@ -447,7 +512,7 @@ async function freeTextFromChip(v){ history.pop(); freeText(v); }
 
 function restart(){
   for (const k in prefs) delete prefs[k];
-  shown = []; pendingKitchen = null;
+  shown = []; pendingMulti = null;
   greet(false);
 }
 
